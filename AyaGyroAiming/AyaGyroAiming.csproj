@@ -5,7 +5,8 @@
     <TargetFrameworks>net452</TargetFrameworks>
 	<TargetPlatformVersion>8.0</TargetPlatformVersion>
 	<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-	<Version>0.14</Version>
+	<Version>0.17</Version>
+	<NoWin32Manifest>true</NoWin32Manifest>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net452|AnyCPU'">
@@ -13,6 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Crc32.NET" Version="1.2.0" />
     <PackageReference Include="MathNet.Numerics" Version="4.15.0" />
     <PackageReference Include="Nefarius.ViGEm.Client" Version="1.17.175" />
     <PackageReference Include="PInvoke.Kernel32" Version="0.7.104" />
@@ -36,7 +38,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="inis\cemu.ini">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="inis\example.ini">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="inis\ryujinx.ini">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="inis\yuzu.ini">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="Properties\Settings.settings">

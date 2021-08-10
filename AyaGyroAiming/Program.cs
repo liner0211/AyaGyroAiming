@@ -5,10 +5,13 @@ using PInvoke;
 using SharpDX.XInput;
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -17,6 +20,7 @@ using System.Threading;
 using System.Timers;
 using Windows.Devices.Sensors;
 using Windows.Foundation;
+using static AyaGyroAiming.UdpServer;
 
 namespace AyaGyroAiming
 {
@@ -35,9 +39,10 @@ namespace AyaGyroAiming
         static extern int GetWindowText(int hWnd, StringBuilder text, int count);
 
         // controllers vars
-        static List<XInputController> PhysicalControllers = new List<XInputController>();
+        static XInputController PhysicalController;
         static IXbox360Controller VirtualXBOX;
         static XInputGirometer Gyrometer;
+        static XInputAccelerometer Accelerometer;
 
         private delegate bool ConsoleEventDelegate(int eventType);
         static ConsoleEventDelegate CurrentHandler;
@@ -45,10 +50,10 @@ namespace AyaGyroAiming
 
         static bool IsRunning = true;
         static string CurrentPath, CurrentPathIni;
+        static PhysicalAddress PadMacAddress = new PhysicalAddress(new byte[] { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10 });
 
         // settings vars
-        static bool EnableGyroscope;
-        static bool EnableAccelerometer;
+        static bool EnableGyroAiming;
         static uint GyroPullRate;
         static uint GyroMaxSample;
         static float GyroStickMagnitude;
@@ -71,17 +76,7 @@ namespace AyaGyroAiming
             CurrentPathIni = Path.Combine(CurrentPath, "inis");
 
             // default settings
-            EnableGyroscope = Properties.Settings.Default.EnableGyroscope;
-            EnableAccelerometer = Properties.Settings.Default.EnableAccelerometer;
-            GyroPullRate = Properties.Settings.Default.GyroPullRate;
-            GyroMaxSample = Properties.Settings.Default.GyroMaxSample;
-            GyroStickMagnitude = Properties.Settings.Default.GyroStickMagnitude;
-            GyroStickThreshold = Properties.Settings.Default.GyroStickThreshold;
-            GyroStickAggressivity = Properties.Settings.Default.GyroStickAggressivity;
-            GyroStickRange = Properties.Settings.Default.GyroStickRange;
-            GyroStickInvertAxisX = Properties.Settings.Default.GyroStickInvertAxisX;
-            GyroStickInvertAxisY = Properties.Settings.Default.GyroStickInvertAxisY;
-            GyroStickInvertAxisZ = Properties.Settings.Default.GyroStickInvertAxisZ;
+            UpdateSettings();
 
             Console.WriteLine($"AyaGyroAiming ({fileVersionInfo.ProductVersion})");
             Console.WriteLine();
@@ -89,15 +84,43 @@ namespace AyaGyroAiming
             CurrentHandler = new ConsoleEventDelegate(ConsoleEventCallback);
             SetConsoleCtrlHandler(CurrentHandler, true);
 
-            for(int i = 0; i < 4; i++)
-                PhysicalControllers.Add(new XInputController((UserIndex)i));
+            // prepare physical controller
+            PhysicalController = new XInputController(0, 10, PadMacAddress);
+
+            if (PhysicalController == null)
+            {
+                Console.WriteLine("No physical controller detected. Application will stop.");
+                Console.ReadLine();
+                return;
+            }
+
+            // start UDP server (temp)
+            UdpServer _udpServer = new UdpServer(PadMacAddress);
+            _udpServer.Start(26760);
+
+            if (_udpServer != null)
+            {
+                Console.WriteLine($"UDP server has started. Listening to port: 26760");
+                Console.WriteLine();
+                PhysicalController.SetUdpServer(_udpServer);
+            }
 
             // default is 10ms rating and 10 samples
-            Gyrometer = new XInputGirometer(EnableGyroscope, GyroPullRate, GyroMaxSample, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
+            Gyrometer = new XInputGirometer(GyroPullRate, GyroMaxSample, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
 
-            if (Gyrometer.motion == null)
+            if (Gyrometer.sensor == null)
             {
                 Console.WriteLine("No Gyrometer detected. Application will stop.");
+                Console.ReadLine();
+                return;
+            }
+
+            // default is 10ms rating
+            Accelerometer = new XInputAccelerometer(GyroPullRate);
+
+            if (Accelerometer.sensor == null)
+            {
+                Console.WriteLine("No Accelerometer detected. Application will stop.");
                 Console.ReadLine();
                 return;
             }
@@ -114,19 +137,18 @@ namespace AyaGyroAiming
 
             VirtualXBOX.Connect();
             Console.WriteLine($"Virtual {VirtualXBOX.GetType().Name} initialised.");
-            foreach (XInputController PhysicalController in PhysicalControllers.Where(a => a.connected))
-            {
-                PhysicalController.SetVirtualController(VirtualXBOX);
-                PhysicalController.SetGyroscope(Gyrometer);
-                Console.WriteLine($"Virtual {VirtualXBOX.GetType().Name} attached to {PhysicalController.GetType().Name} {PhysicalController.index}.");
-            }
+            PhysicalController.SetVirtualController(VirtualXBOX);
+            PhysicalController.SetGyroscope(Gyrometer);
+            PhysicalController.SetAccelerometer(Accelerometer);
+            Console.WriteLine($"Virtual {VirtualXBOX.GetType().Name} attached to {PhysicalController.GetType().Name} {PhysicalController.index}.");
 
             // monitor processes and apply specific profile
             Thread MonitorThread = new Thread(MonitorProcess);
             MonitorThread.Start();
 
             // listen to user inputs (a bit too rigid, improve me)
-            ConsoleListener();
+            Thread MonitorConsole = new Thread(ConsoleListener);
+            MonitorConsole.Start();
         }
 
         static void ConsoleListener()
@@ -168,7 +190,9 @@ namespace AyaGyroAiming
                                     Properties.Settings.Default[variable] = uint.Parse(array[2]);
                                     break;
                             }
+                            Console.WriteLine($"{variable} set to: {array[2]}");
                             Properties.Settings.Default.Save();
+                            UpdateSettings();
                             break;
                         case "/get":
                             if (array.Length < 2)
@@ -180,15 +204,37 @@ namespace AyaGyroAiming
                             Process.Start("joy.cpl");
                             break;
                         case "/help":
+                            Console.WriteLine($"Available settings are:");
+                            foreach (SettingsProperty setting in Properties.Settings.Default.Properties)
+                                Console.WriteLine($"\t{setting.Name}");
+                            Console.WriteLine();
                             Console.WriteLine("Availables commands are:");
-                            Console.WriteLine("/set settings value");
-                            Console.WriteLine("/get settings");
-                            Console.WriteLine("/cpl");
+                            Console.WriteLine("\t/set settings value (define global value)");
+                            Console.WriteLine("\t/get settings (retrieve global value)");
+                            Console.WriteLine("\t/cpl (display the Game Controllers)");
                             break;
                     }
 
-                }catch(Exception ex) { }
+                }catch(Exception /*ex*/) { }
             }
+        }
+
+        static void UpdateSettings()
+        {
+            EnableGyroAiming = Properties.Settings.Default.EnableGyroAiming;
+            GyroPullRate = Properties.Settings.Default.GyroPullRate;
+            GyroMaxSample = Properties.Settings.Default.GyroMaxSample;
+            GyroStickMagnitude = Properties.Settings.Default.GyroStickMagnitude;
+            GyroStickThreshold = Properties.Settings.Default.GyroStickThreshold;
+            GyroStickAggressivity = Properties.Settings.Default.GyroStickAggressivity;
+            GyroStickRange = Properties.Settings.Default.GyroStickRange;
+            GyroStickInvertAxisX = Properties.Settings.Default.GyroStickInvertAxisX;
+            GyroStickInvertAxisY = Properties.Settings.Default.GyroStickInvertAxisY;
+            GyroStickInvertAxisZ = Properties.Settings.Default.GyroStickInvertAxisZ;
+
+            // update controller settings
+            if (PhysicalController != null)
+                PhysicalController.gyrometer.UpdateSettings(EnableGyroAiming, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
         }
 
         static void MonitorProcess()
@@ -208,15 +254,14 @@ namespace AyaGyroAiming
                     try
                     {
                         FileInfo CurrentFile = new FileInfo(CurrentProcess.MainModule.FileName);
-                        string filename = Path.Combine(CurrentPathIni, CurrentFile.Name.Replace("exe", "ini"));
+                        string filename = Path.Combine(CurrentPathIni, CurrentFile.Name.Replace("exe", "ini")).ToLower();
 
                         // check if a specific profile exists for the foreground executable
                         if (File.Exists(filename))
                         {
                             IniFile MyIni = new IniFile(filename);
 
-                            bool EnableGyroscope = MyIni.ReadBool("EnableGyroscope", "Global");
-                            bool EnableAccelerometer = MyIni.ReadBool("EnableAccelerometer", "Global");
+                            bool EnableGyroAiming = MyIni.ReadBool("EnableGyroAiming", "Gyroscope");
 
                             float GyroStickMagnitude = MyIni.ReadFloat("GyroStickMagnitude", "Gyroscope");
                             float GyroStickThreshold = MyIni.ReadFloat("GyroStickThreshold", "Gyroscope");
@@ -227,17 +272,16 @@ namespace AyaGyroAiming
                             bool GyroStickInvertAxisY = MyIni.ReadBool("GyroStickInvertAxisX", "Gyroscope");
                             bool GyroStickInvertAxisZ = MyIni.ReadBool("GyroStickInvertAxisX", "Gyroscope");
 
-                            foreach (XInputController PhysicalController in PhysicalControllers.Where(a => a.connected))
-                                PhysicalController.gyrometer.UpdateSettings(EnableGyroscope, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
+                            // update controller settings
+                            if (PhysicalController != null)
+                                PhysicalController.gyrometer.UpdateSettings(EnableGyroAiming, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
 
                             Console.WriteLine($"Gyroscope settings applied for {CurrentFile.Name}");
                         }
+                        else
+                            UpdateSettings();
                     }
                     catch (Exception) { }
-
-                    // restore default
-                    foreach (XInputController PhysicalController in PhysicalControllers.Where(a => a.connected))
-                        PhysicalController.gyrometer.UpdateSettings(EnableGyroscope, GyroStickMagnitude, GyroStickThreshold, GyroStickAggressivity, GyroStickRange, GyroStickInvertAxisX, GyroStickInvertAxisY, GyroStickInvertAxisZ);
 
                     CurrenthWnd = hWnd;
                 }

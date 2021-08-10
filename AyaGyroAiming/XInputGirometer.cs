@@ -11,14 +11,18 @@ namespace AyaGyroAiming
 {
     public class XInputGirometerReadingChangedEventArgs : EventArgs
     {
-        public short AngularStickX { get; set; }
-        public short AngularStickY { get; set; }
-        public short AngularStickZ { get; set; }
+        public float AngularStickX { get; set; }
+        public float AngularStickY { get; set; }
+        public float AngularStickZ { get; set; }
+
+        public float AngularVelocityX { get; set; }
+        public float AngularVelocityY { get; set; }
+        public float AngularVelocityZ { get; set; }
     }
 
     public class XInputGirometer
     {
-        public Gyrometer motion;
+        public Gyrometer sensor;
         public uint poolsize;
 
         // Compute & Maths
@@ -38,17 +42,16 @@ namespace AyaGyroAiming
         bool GyroStickInvertAxisX;
         bool GyroStickInvertAxisY;
         bool GyroStickInvertAxisZ;
-        bool Enabled;
+        public bool EnableGyroAiming;
 
         public event XInputGirometerReadingChangedEventHandler ReadingChanged;
         public delegate void XInputGirometerReadingChangedEventHandler(Object sender, XInputGirometerReadingChangedEventArgs e);
 
-        public XInputGirometer(bool _enable, uint _rate, uint _size, float _magnitude, float _threshold, float _aggro, float _range, bool _invX, bool _invY, bool _invZ)
+        public XInputGirometer(uint _rate, uint _size, float _magnitude, float _threshold, float _aggro, float _range, bool _invX, bool _invY, bool _invZ)
         {
-            motion = Gyrometer.GetDefault();
-            if (motion != null)
+            sensor = Gyrometer.GetDefault();
+            if (sensor != null)
             {
-                Enabled = _enable;
                 GyroStickMagnitude = _magnitude;
                 GyroStickThreshold = _threshold;
                 GyroStickAggressivity = _aggro;
@@ -62,19 +65,19 @@ namespace AyaGyroAiming
                 GyroY = new float[_size];
                 GyroZ = new float[_size];
 
-                motion.ReportInterval = _rate < motion.MinimumReportInterval ? motion.MinimumReportInterval : _rate;
+                sensor.ReportInterval = _rate < sensor.MinimumReportInterval ? sensor.MinimumReportInterval : _rate;
                 Console.WriteLine($"Gyrometer initialised.");
-                Console.WriteLine($"Gyrometer report interval set to {motion.ReportInterval}ms");
+                Console.WriteLine($"Gyrometer report interval set to {sensor.ReportInterval}ms");
                 Console.WriteLine($"Gyrometer sample pool size set to: {_size}");
                 Console.WriteLine();
 
-                motion.ReadingChanged += GyroReadingChanged;
+                sensor.ReadingChanged += GyroReadingChanged;
             }
         }
 
         public void UpdateSettings(bool _enable, float _magnitude, float _threshold, float _aggro, float _range, bool _invX, bool _invY, bool _invZ)
         {
-            Enabled = _enable;
+            EnableGyroAiming = _enable;
             GyroStickMagnitude = _magnitude;
             GyroStickThreshold = _threshold;
             GyroStickAggressivity = _aggro;
@@ -92,9 +95,9 @@ namespace AyaGyroAiming
             lowpass.Z = input.Z * GyroStickAlpha + lowpass.Z * (1.0f - GyroStickAlpha);
 
             Vector3 medpass = new Vector3();
-            medpass.X = GyroStickAlpha * medpass.X + (1 - GyroStickAlpha) * lowpass.X;
-            medpass.Y = GyroStickAlpha * medpass.Y + (1 - GyroStickAlpha) * lowpass.Y;
-            medpass.Z = GyroStickAlpha * medpass.Z + (1 - GyroStickAlpha) * lowpass.Z;
+            medpass.X = GyroStickAlpha * medpass.X + (1.0f - GyroStickAlpha) * lowpass.X;
+            medpass.Y = GyroStickAlpha * medpass.Y + (1.0f - GyroStickAlpha) * lowpass.Y;
+            medpass.Z = GyroStickAlpha * medpass.Z + (1.0f - GyroStickAlpha) * lowpass.Z;
 
             Vector3 hipass = new Vector3();
             hipass.X = input.X - medpass.X;
@@ -123,9 +126,6 @@ namespace AyaGyroAiming
 
         void GyroReadingChanged(Gyrometer sender, GyrometerReadingChangedEventArgs args)
         {
-            if (!Enabled)
-                return;
-
             GyrometerReading reading = args.Reading;
 
             Vector3 input = new Vector3((float)reading.AngularVelocityY, (float)reading.AngularVelocityX, (float)reading.AngularVelocityZ);
@@ -145,18 +145,23 @@ namespace AyaGyroAiming
             // scale value
             Vector3 posAverage = new Vector3()
             {
-                X = GyroStickInvertAxisX ? 1 : -1 * GyroX.Median(),
-                Y = GyroStickInvertAxisY ? 1 : -1 * GyroY.Median(),
-                Z = GyroStickInvertAxisZ ? 1 : -1 * GyroZ.Median(),
+                X = (float)(GyroStickInvertAxisX ? 1.0f : -1.0f) * (float)GyroX.Average(),
+                Y = (float)(GyroStickInvertAxisY ? 1.0f : -1.0f) * (float)GyroY.Average(),
+                Z = (float)(GyroStickInvertAxisZ ? 1.0f : -1.0f) * (float)GyroZ.Average(),
             };
             posAverage *= 10000.0f;
 
             // raise event
             XInputGirometerReadingChangedEventArgs newargs = new XInputGirometerReadingChangedEventArgs()
             {
-                AngularStickX = (short)posAverage.X,
-                AngularStickY = (short)posAverage.Y,
-                AngularStickZ = (short)posAverage.Z
+                // gyro2stick
+                AngularStickX = posAverage.X,
+                AngularStickY = posAverage.Y,
+                AngularStickZ = posAverage.Z,
+                // udp
+                AngularVelocityX = (float)reading.AngularVelocityX,
+                AngularVelocityY = (float)reading.AngularVelocityY,
+                AngularVelocityZ = (float)reading.AngularVelocityZ
             };
             ReadingChanged?.Invoke(this, newargs);
         }
